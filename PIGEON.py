@@ -8,7 +8,7 @@ import pandas as pd
 import multiprocessing
 import pickle
 from timeit import default_timer as timer
-from AJPreprocessing import *
+
 
 def read_config(config_path):
     if not os.path.exists(config_path):
