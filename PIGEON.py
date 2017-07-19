@@ -202,9 +202,9 @@ def run_pigeon(config_file):
 
     pigeon.transform_input()
 
-    res = pigeon.run_model()
+    pigeon.run_model()
 
-    pigeon.create_report(res)
+    #pigeon.create_report(res)
 
     pigeon.finalize()
 

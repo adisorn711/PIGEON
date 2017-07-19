@@ -16,10 +16,12 @@ from datetime import timedelta
 from scipy.stats import ttest_ind, ttest_1samp
 from statsmodels.tsa.seasonal import seasonal_decompose
 import scipy
+from PIGEON_Datastore import PGDB
 
 class PIGEON(object):
     def __init__(self, config_path):
         self._config = self.__read_config(config_path)
+        self._db = PGDB(self._config)
         self._model = PIGEON_MODEL(self._config)
 
     def initialize(self):
@@ -37,13 +39,20 @@ class PIGEON(object):
         if not self.__validate_input():
             return False
 
+        if not self._db.initialize():
+            return False
+
         return True
 
     def transform_input(self):
-        self._model.create_data_index()
+        # get done accounts
+        saved_accs = self._db.get_all_accounts()
+        print "{} accounts have been done.".format(len(saved_accs))
+
+        self._model.create_data_index(saved_accs)
 
     def run_model(self):
-        return self._model.run_model()
+        self._model.run_model(self.__exec_callback, self._db)
 
     def create_report(self, report_file):
         params = {}
@@ -53,9 +62,19 @@ class PIGEON(object):
         dump_report(self._config['OUTPUT_DIR'],report_file, params)
 
     def finalize(self):
+        self._db.finalize()
+
         return True
 
     ##### Private method ####
+
+    def __exec_callback(self, accs_dic):
+        params = {}
+        params[K_CONFIDENCE] = 100 - self._config[K_CONFIDENCE]
+        params[K_SEASONAL] = self._config[K_SEASONAL]
+
+        dump_report(self._config['OUTPUT_DIR'],accs_dic, params)
+
     def __check_file_exists(self, file_path):
         return os.path.exists(file_path)
 
@@ -90,6 +109,8 @@ class PIGEON(object):
         config['OUTPUT_DIR'] = Config.get('Parameters', 'OUTPUT_DIR')
         config[K_CONFIDENCE] = int(Config.get('Parameters', K_CONFIDENCE))
         config[K_SEASONAL] = float(Config.get('Parameters', K_SEASONAL))
+        config['DB_DIR'] = Config.get('Parameters', 'DB_DIR')
+        config['SAVE_EVERY'] = int(Config.get('Parameters', 'SAVE_EVERY'))
 
         return config
 
@@ -113,7 +134,7 @@ class PIGEON_MODEL(object):
         start_date, end_date = self._config[K_DATE_RANGE]
         self._running_month = end_date.month
 
-    def create_data_index(self):
+    def create_data_index(self, saved_accs):
         #dwh_acc_merchant = defaultdict(set)
         #dwh_acc_monthly = defaultdict(set)
         #dwh_acc_merc_monthly = defaultdict(set)
@@ -134,6 +155,9 @@ class PIGEON_MODEL(object):
             spamreader = csv.reader(csvfile, delimiter='|')
             next(spamreader, None)
             for k in spamreader:
+
+                if k[0] in saved_accs:
+                    continue
                 #key = "_".join((k[0],k[2]))
                 #txn_date = parse(k[1]).date()
                 #print "_".join((k[0],k[2]))
@@ -167,26 +191,32 @@ class PIGEON_MODEL(object):
         for k,v in self._acc_groupby_monthly.iteritems():
             self._acc_groupby_monthly[k] = sum(v)
 
-        for k,v in self._acc_merc_visit_monthly.iteritems():
-            print k,v
-            break
-
-    def run_model(self):
+    def run_model(self, cb, db):
         acc_keys = self._acc_merchant.keys()
-
+        save_every = self._config['SAVE_EVERY']
         res = {}
+        i = 1
         for acc_number in acc_keys:
-
             acc_data = self.prepare_data(acc_number)
             #print acc_data
 
             report = self.get_bahaviour_scores(acc_data)
             res[acc_number] = report
 
+            if i % save_every == 0:
+                cb(res)
+                db.save_accounts(res.keys())
+                res = {}
+                #print "Finished ", i
+
+            i += 1
             #print report
             #break
             #t,p = ttest_ind(tst, trn, equal_var=False)
-        return res
+        if len(res) > 0:
+            cb(res)
+            db.save_accounts(res.keys())
+        #return res
 
     def prepare_data(self, acc_number):
         merchants = self._acc_merchant[acc_number]
@@ -354,7 +384,7 @@ def compute_seasonal_score(data_monthly, month_i=None):
     scores = [round(i,4) for i in preprocessing.scale(seasonal_scores)]
     return scores if month_i is None else scores[month_i]
 
-def dump_report(to_path, report, params):
+def dump_report(to_path, report_res, params):
     b = 0
     s = 0
     both = 0
@@ -363,7 +393,7 @@ def dump_report(to_path, report, params):
     behavior_overall = []
     confid = params[K_CONFIDENCE]
     seasonal_threshold = params[K_SEASONAL]
-    for acc_number,report in report.iteritems():
+    for acc_number,report in report_res.iteritems():
         has_b = False
         has_s = False
         has_both = False
@@ -426,13 +456,21 @@ def dump_report(to_path, report, params):
     # print behavior_overall[:5]
 
     columns = ['ACC_NUMBER', 'ENTITY', 'MERCHANT', 'BEHAVIOR_FLAG', 'SEASONAL_FLAG', 'RAW_SCORE']
-    with open(os.path.join(to_path, 'behavior_insight.csv'), 'wb') as f:  # Just use 'w' mode in 3.x
-        w = csv.DictWriter(f, columns)
-        w.writeheader()
-        w.writerows(rows)
+    wrtie_to_csv(os.path.join(to_path, 'behavior_insight.csv'), columns, rows)
 
     columns = ['ACC_NUMBER', 'ENTITY'] + abbrvs
-    with open(os.path.join(to_path, 'behavior_overall.csv'), 'wb') as f:  # Just use 'w' mode in 3.x
-        w = csv.DictWriter(f, columns)
-        w.writeheader()
-        w.writerows(behavior_overall)
+    wrtie_to_csv(os.path.join(to_path, 'behavior_overall.csv'), columns, behavior_overall)
+
+def wrtie_to_csv(path, columns, row_data):
+    exists = os.path.exists(path)
+
+    if exists:
+        with open(path, 'a') as f:  # Just use 'w' mode in 3.x
+            w = csv.DictWriter(f, columns)
+            w.writerows(row_data)
+
+    else:
+        with open(path, 'wb') as f:  # Just use 'w' mode in 3.x
+            w = csv.DictWriter(f, columns)
+            w.writeheader()
+            w.writerows(row_data)
