@@ -10,6 +10,7 @@ import ConfigParser
 from Constants import *
 from collections import defaultdict
 from sklearn import preprocessing
+import logging
 
 from dateutil import rrule
 from datetime import timedelta
@@ -18,9 +19,15 @@ from statsmodels.tsa.seasonal import seasonal_decompose
 import scipy
 from PIGEON_Datastore import PGDB
 
+
+
 class PIGEON(object):
     def __init__(self, config_path):
-        self._config = self.__read_config(config_path)
+        #self._config = self.__read_config(config_path)
+        self._config = config_path
+
+        self.__check_logging_system()
+
         self._db = PGDB(self._config)
         self._model = PIGEON_MODEL(self._config)
 
@@ -33,26 +40,30 @@ class PIGEON(object):
         if not self.__check_output_directory():
             return False
 
-        if not self.__check_logging_system():
-            return False
-
         if not self.__validate_input():
             return False
 
         if not self._db.initialize():
             return False
 
+        logging.info('Initialization completed')
+
         return True
 
     def transform_input(self):
         # get done accounts
+        logging.info('Retreiving all saved accounts')
         saved_accs = self._db.get_all_accounts()
-        print "{} accounts have been done.".format(len(saved_accs))
+        logging.info("{} accounts have been done.".format(len(saved_accs)))
 
+        logging.info('Creating data structure and index before start running')
         self._model.create_data_index(saved_accs)
+        logging.info('Data Index has been completed.')
 
     def run_model(self):
+        logging.info('Executing Model')
         self._model.run_model(self.__exec_callback, self._db)
+        logging.info('Finished Model Execution')
 
     def create_report(self, report_file):
         params = {}
@@ -62,7 +73,9 @@ class PIGEON(object):
         dump_report(self._config['OUTPUT_DIR'],report_file, params)
 
     def finalize(self):
+        logging.info('Finalizing the system.')
         self._db.finalize()
+        logging.info('The system has finished.')
 
         return True
 
@@ -75,6 +88,8 @@ class PIGEON(object):
 
         dump_report(self._config['OUTPUT_DIR'],accs_dic, params)
 
+        logging.info('{} accounts have been done and saved to persistent store.'.format(len(accs_dic)))
+
     def __check_file_exists(self, file_path):
         return os.path.exists(file_path)
 
@@ -82,6 +97,13 @@ class PIGEON(object):
         return True
 
     def __check_logging_system(self):
+        (start_date, end_date) = self._config[K_DATE_RANGE]
+        logAtDate = str(int(end_date.year*100) + int(end_date.month)) + '.log'
+        log_dir = self._config['LOGGING_DIR']
+        log_file_path = os.path.join(log_dir, logAtDate)
+
+        logging.basicConfig(filename=log_file_path, filemode='a', level=logging.INFO, format='%(asctime)s-%(levelname)s-: %(message)s', datefmt='%m/%d/%Y %I:%M:%S %p')
+
         return True
 
     def __check_output_directory(self):
@@ -105,12 +127,15 @@ class PIGEON(object):
         #date_ranges = ((start_date.year, start_date.month),(end_date.year, end_date.month))
 
         config[K_DATE_RANGE] = (start_date, end_date)
+        config['EXEC_DATE'] = str(int(end_date.year*100) + int(end_date.month))
+
         config['INPUT_DIR'] = Config.get('Parameters', 'INPUT_DIR')
         config['OUTPUT_DIR'] = Config.get('Parameters', 'OUTPUT_DIR')
         config[K_CONFIDENCE] = int(Config.get('Parameters', K_CONFIDENCE))
         config[K_SEASONAL] = float(Config.get('Parameters', K_SEASONAL))
         config['DB_DIR'] = Config.get('Parameters', 'DB_DIR')
         config['SAVE_EVERY'] = int(Config.get('Parameters', 'SAVE_EVERY'))
+        config['LOGGING_DIR'] = Config.get('Parameters', 'LOGGING_DIR')
 
         return config
 
@@ -128,6 +153,7 @@ class PIGEON_MODEL(object):
         #self._acc_merc_txn_budget = defaultdict(list)
         self._acc_merc_freq = defaultdict(list)
         self._acc_merc_visit_monthly = defaultdict(list)
+        self._acc_master = dict()
         self._month_keys = []
         self._STA_CATS = set(['PETROL'])
 
@@ -135,11 +161,6 @@ class PIGEON_MODEL(object):
         self._running_month = end_date.month
 
     def create_data_index(self, saved_accs):
-        #dwh_acc_merchant = defaultdict(set)
-        #dwh_acc_monthly = defaultdict(set)
-        #dwh_acc_merc_monthly = defaultdict(set)
-        #dwh_acc_groupby_merc_monthly = defaultdict(list)
-        #dwh_acc_merc_txn = defaultdict(list)
         start_date, end_date = self._config[K_DATE_RANGE]
 
         month_keys = []
@@ -151,31 +172,24 @@ class PIGEON_MODEL(object):
         tmp_acc_groupby_merc_yearly = defaultdict(list)
 
         data_path = self._config['INPUT_DIR']
-        with open(data_path, 'rb') as csvfile:
+        exec_date = int(self._config['EXEC_DATE'])
+        with open(os.path.join(data_path, 'fcc_txn.csv'), 'rb') as csvfile:
             spamreader = csv.reader(csvfile, delimiter='|')
             next(spamreader, None)
-            for k in spamreader:
-
+            for row in spamreader:
+                k = map(lambda x:x.strip(), row)
                 if k[0] in saved_accs:
                     continue
-                #key = "_".join((k[0],k[2]))
-                #txn_date = parse(k[1]).date()
-                #print "_".join((k[0],k[2]))
+
                 txn_timestamp = int(k[4])
                 self._acc_merchant[k[0]].add(k[2])
                 self._acc_monthly[k[0]].add(int(k[4]))
                 self._acc_groupby_monthly["_".join((k[0],k[4]))].append(float(k[3]))
-                #self._acc_merc_txn_reduce[k[0]].append(float(k[3]))
                 self._acc_merc_monthly["_".join((k[0],k[2]))].add(int(k[4]))
-                #self._acc_merc_yearly["_".join((k[0],k[2]))].add(int(k[4])/100)
                 self._acc_groupby_merc_monthly["_".join((k[0],k[2],str(int(k[4]))))].append(float(k[3]))
-                #self._acc_groupby_merc_yearly["_".join((k[0],k[2],str(int(k[4])/100)))].append(float(k[3]))
-                #tmp_acc_groupby_merc_yearly["_".join((k[0],k[2],str(int(k[4])/100)))].append(float(k[3]))
-                self._acc_merc_txn["_".join((k[0],k[2], "H" if txn_timestamp < 201704 else "R"))].append(float(k[3]))
+                self._acc_merc_txn["_".join((k[0],k[2], "H" if txn_timestamp < exec_date else "R"))].append(float(k[3]))
                 self._acc_merc_freq["_".join((k[0],k[2]))].append(1)
-                #print k
-                #print ', '.join(row)
-                #break
+
 
         # for k,v in self._acc_groupby_merc_yearly.iteritems():
         #     self._acc_groupby_merc_yearly[k] = np.mean(v)
@@ -190,6 +204,21 @@ class PIGEON_MODEL(object):
 
         for k,v in self._acc_groupby_monthly.iteritems():
             self._acc_groupby_monthly[k] = sum(v)
+
+        #############################################
+        # Create Account Master
+        #############################################
+        with open(os.path.join(data_path, 'account_master.csv'), 'rb') as csvfile:
+            spamreader = csv.reader(csvfile, delimiter='|')
+            next(spamreader, None)
+            for k in spamreader:
+                if len(k) == 0:
+                    continue
+
+                if k[0] in saved_accs:
+                    continue
+
+                self._acc_master[k[0]] = (k[1], k[2])
 
     def run_model(self, cb, db):
         acc_keys = self._acc_merchant.keys()
@@ -230,12 +259,16 @@ class PIGEON_MODEL(object):
         #prepare overall trend
         m_keys = self._acc_monthly[acc_number]
         total_monthly = []
+        #print m_keys
         for yyyymm in month_keys:
             if yyyymm in m_keys:
+                #print yyyymm, self._acc_groupby_monthly["_".join((acc_number,str(yyyymm)))]
                 total_monthly.append(self._acc_groupby_monthly["_".join((acc_number,str(yyyymm)))])
             else:
                 total_monthly.append(0)
 
+        #print acc_number
+        #print total_monthly
         non_zero_n = np.count_nonzero(total_monthly) * 100 / float(len(total_monthly))
         if non_zero_n >= 80:
             data['overall'] = total_monthly
@@ -344,8 +377,6 @@ def t_test(TST,TR):
     if np.count_nonzero(TR) == 0 and np.count_nonzero(TST) == 0:
         return (-1, -1)
 
-    #A, B = list(TR), list(TST)
-    #return (-1, -1)
     t, p = 0, 0
     if len(TST) == 1:
         n = len(TR)
@@ -366,12 +397,8 @@ def t_test(TST,TR):
         t = (TST[0] - u)/std
         p = scipy.stats.t.sf(np.abs(t), n-1)*2
         return (round(t, 4), round(p*100.0, 2))
-        #t,p = ttest_1samp(A, TST[0])
 
-        #print "M ", M
     else:
-        #print "N ", N
-        #print "M ", M
         t,p = ttest_ind(TST, TR, equal_var=False)
 
     return (round(t, 4), round(p*100.0, 2))
@@ -426,15 +453,15 @@ def dump_report(to_path, report_res, params):
                         raw_score = t
                         if 'S-SCORE' in score_info:
                             ss = score_info['S-SCORE']
-                            raw_score *= ss
+                            raw_score *= np.tanh(ss)
                             has_both = True
-                            if ss < seasonal_threshold:
+                            if np.fabs(ss) < seasonal_threshold:
                                 has_s = True
                                 data['SEASONAL_FLAG'] = 'N'
                             else:
                                 data['SEASONAL_FLAG'] = 'Y'
                         else:
-                            data['SEASONAL_FLAG'] = 'NA'
+                            data['SEASONAL_FLAG'] = 'U'
 
                         data['RAW_SCORE'] = round(np.tanh(raw_score), 2)
 

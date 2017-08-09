@@ -12,21 +12,14 @@ class PGDB(object):
 
     def initialize(self):
         db_root_dir = self._config['DB_DIR']
-        self._conn = sqlite3.connect(os.path.join(db_root_dir,'account.db'))
-
         start_date, end_date = self._config[K_DATE_RANGE]
         self._running_month = int(end_date.year*100) + int(end_date.month)
-        self._table_name = "ACCOUNT_{}".format(self._running_month)
+
+        self._conn = sqlite3.connect(os.path.join(db_root_dir,'account_{}.db'.format(self._running_month)))
+        self._table_name = "ACCOUNT"
 
         self._conn.execute("CREATE TABLE IF NOT EXISTS {} \
              (ACC_NUMBER CHAR(16) PRIMARY KEY NOT NULL);".format(self._table_name))
-
-        cursor = self._conn.execute("SELECT name FROM sqlite_master WHERE type='table';")
-        all_tables = [i[0] for i in cursor.fetchall()]
-
-        for t in all_tables:
-            if t != self._table_name:
-                self._conn.execute("DROP TABLE IF EXISTS {};".format(t))
 
         return True
 
