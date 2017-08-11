@@ -211,7 +211,8 @@ class PIGEON_MODEL(object):
         with open(os.path.join(data_path, 'account_master.csv'), 'rb') as csvfile:
             spamreader = csv.reader(csvfile, delimiter='|')
             next(spamreader, None)
-            for k in spamreader:
+            for row in spamreader:
+                k = map(lambda x:x.strip(), row)
                 if len(k) == 0:
                     continue
 
@@ -349,12 +350,13 @@ class PIGEON_MODEL(object):
             data = {}
             txn_data = dataDic['txn']
             (score, chance) = t_test(txn_data[1], txn_data[0])
-            data['B-SCORE'] = (score, chance)
+            data['SP-SCORE'] = score
+            data['SP-PROB'] = chance
 
             if 'txn_ss' in dataDic:
                 ts_data = dataDic['txn_ss']
                 s_score = compute_seasonal_score(ts_data, month_i)
-                data['S-SCORE'] = s_score
+                data['SS-SCORE'] = s_score
 
             res[merc] = data
 
@@ -366,16 +368,23 @@ class PIGEON_MODEL(object):
 
         return res
 
+
+
+
 eps = 0.0001
 def t_test(TST,TR):
     if len(TR) < 1:
-        return (-1, -1)
+        return (-11, -1)
 
     if len(TST) < 1:
-        return (-1, 0.0)
+        return (-10, 0.0)
 
     if np.count_nonzero(TR) == 0 and np.count_nonzero(TST) == 0:
-        return (-1, -1)
+        return (-20, -1)
+
+
+    if set(TST) == set(TR):
+        return (-13, -1)
 
     t, p = 0, 0
     if len(TST) == 1:
@@ -393,13 +402,27 @@ def t_test(TST,TR):
                 return (-1, -1)
 
             return (round(t, 4), 0.00)
-
+        #print "Non zero ",std, TST[0]
         t = (TST[0] - u)/std
         p = scipy.stats.t.sf(np.abs(t), n-1)*2
         return (round(t, 4), round(p*100.0, 2))
+    elif len(TR) == 1:
+        u = np.mean(TST)
+        x = TR[0]
 
+        t = -12 if x < u else 12
+        p = 0.00
     else:
+        #print len(TST), len(TR), type(TST), type(TR)
+        #t,p = -5,-5
         t,p = ttest_ind(TST, TR, equal_var=False)
+
+        if np.isinf(t):
+            u_tr = np.mean(TR)
+            u_tst = np.mean(TST)
+
+            t = -14 if u_tst < u_tr else 14
+            p = 0.00
 
     return (round(t, 4), round(p*100.0, 2))
 
@@ -428,44 +451,51 @@ def dump_report(to_path, report_res, params):
             if merc == 'overall':
                 data = {}
                 data['ACC_NUMBER'] = acc_number
-                data['ENTITY'] = 'KCC'
+                #data['ENTITY'] = 'KCC'
                 s_scores = score_info
                 for i,mon_abbr in enumerate(abbrvs):
                     data[mon_abbr] = s_scores[i]
 
                 behavior_overall.append(data)
             else:
-                if 'B-SCORE' in score_info:
-                    t,p = score_info['B-SCORE']
-                    #print p
-                    if p > -1 and p < confid:
-                        data = {}
-                        data['ACC_NUMBER'] = acc_number
-                        data['ENTITY'] = 'KCC'
-                        data['MERCHANT'] = merc
-                        if t > 0:
-                            data['BEHAVIOR_FLAG'] = 'U'
-                        else:
-                            data['BEHAVIOR_FLAG'] = 'D'
-                        #print p
-                        has_b = True
+                data = {}
+                data['ACC_NUMBER'] = acc_number
+                data['MERCHANT'] = merc
+                data['SP-SCORE'] = score_info['SP-SCORE']
+                data['SP-CONF'] = score_info['SP-PROB']
+                if 'SS-SCORE' in score_info:
+                    data['SS-SCORE'] = score_info['SS-SCORE']
+                else:
+                    data['SS-SCORE'] = -99
+                # #print p
+                # if p > -1 and p < confid:
+                #     data = {}
+                #     data['ACC_NUMBER'] = acc_number
+                #     data['ENTITY'] = 'KCC'
+                #     data['MERCHANT'] = merc
+                #     if t > 0:
+                #         data['BEHAVIOR_FLAG'] = 'U'
+                #     else:
+                #         data['BEHAVIOR_FLAG'] = 'D'
+                #     #print p
+                #     has_b = True
+                #
+                #     raw_score = t
+                #     if 'S-SCORE' in score_info:
+                #         ss = score_info['S-SCORE']
+                #         raw_score *= np.tanh(ss)
+                #         has_both = True
+                #         if np.fabs(ss) < seasonal_threshold:
+                #             has_s = True
+                #             data['SEASONAL_FLAG'] = 'N'
+                #         else:
+                #             data['SEASONAL_FLAG'] = 'Y'
+                #     else:
+                #         data['SEASONAL_FLAG'] = 'U'
+                #
+                #     data['RAW_SCORE'] = round(np.tanh(raw_score), 2)
 
-                        raw_score = t
-                        if 'S-SCORE' in score_info:
-                            ss = score_info['S-SCORE']
-                            raw_score *= np.tanh(ss)
-                            has_both = True
-                            if np.fabs(ss) < seasonal_threshold:
-                                has_s = True
-                                data['SEASONAL_FLAG'] = 'N'
-                            else:
-                                data['SEASONAL_FLAG'] = 'Y'
-                        else:
-                            data['SEASONAL_FLAG'] = 'U'
-
-                        data['RAW_SCORE'] = round(np.tanh(raw_score), 2)
-
-                        rows.append(data)
+                rows.append(data)
 
         if has_b:
             b += 1
@@ -482,22 +512,22 @@ def dump_report(to_path, report_res, params):
     # print rows[:5]
     # print behavior_overall[:5]
 
-    columns = ['ACC_NUMBER', 'ENTITY', 'MERCHANT', 'BEHAVIOR_FLAG', 'SEASONAL_FLAG', 'RAW_SCORE']
-    wrtie_to_csv(os.path.join(to_path, 'behavior_insight.csv'), columns, rows)
+    columns = ['ACC_NUMBER', 'MERCHANT', 'SP-SCORE', 'SP-CONF', 'SS-SCORE']
+    wrtie_to_csv(os.path.join(to_path, 'spending_category.csv'), columns, rows)
 
-    columns = ['ACC_NUMBER', 'ENTITY'] + abbrvs
-    wrtie_to_csv(os.path.join(to_path, 'behavior_overall.csv'), columns, behavior_overall)
+    columns = ['ACC_NUMBER'] + abbrvs
+    wrtie_to_csv(os.path.join(to_path, 'spending_overall.csv'), columns, behavior_overall)
 
 def wrtie_to_csv(path, columns, row_data):
     exists = os.path.exists(path)
 
     if exists:
         with open(path, 'a') as f:  # Just use 'w' mode in 3.x
-            w = csv.DictWriter(f, columns)
+            w = csv.DictWriter(f, columns, delimiter='|')
             w.writerows(row_data)
 
     else:
         with open(path, 'wb') as f:  # Just use 'w' mode in 3.x
-            w = csv.DictWriter(f, columns)
+            w = csv.DictWriter(f, columns, delimiter='|')
             w.writeheader()
             w.writerows(row_data)
