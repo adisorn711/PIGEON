@@ -173,7 +173,7 @@ class PIGEON_MODEL(object):
 
         data_path = self._config['INPUT_DIR']
         exec_date = int(self._config['EXEC_DATE'])
-        with open(os.path.join(data_path, 'fcc_txn.csv'), 'rb') as csvfile:
+        with open(os.path.join(data_path, 'input.csv'), 'rb') as csvfile:
             spamreader = csv.reader(csvfile, delimiter='|')
             next(spamreader, None)
             for row in spamreader:
