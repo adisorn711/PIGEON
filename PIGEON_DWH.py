@@ -306,22 +306,10 @@ class PIGEON_MODEL(object):
         self._acc_merc_freq = dict()
         self._acc_merc_visit_monthly = dict()
 
-        # self._acc_merchant = defaultdict(set)
-        # self._acc_monthly = defaultdict(set)
-        # self._acc_merc_monthly = defaultdict(set)
-        # self._acc_merc_yearly = defaultdict(set)
-        # self._acc_groupby_monthly = defaultdict(list)
-        # self._acc_groupby_merc_monthly = defaultdict(list)
-        # self._acc_groupby_merc_yearly = defaultdict(list)
-        # self._acc_merc_txn = defaultdict(list)
-        # self._acc_merc_freq = defaultdict(list)
-        # self._acc_merc_visit_monthly = defaultdict(list)
 
     def run_batch(self, cb, db, saved_accs):
-        #processed_accs = set()
-        #self.create_data_index(saved_accs)
         for acc_keys in self.create_data_index(saved_accs):
-            #print len(acc_keys)
+
             res = {}
             for acc_number in acc_keys:
                 acc_data = self.prepare_data(acc_number)
@@ -329,7 +317,6 @@ class PIGEON_MODEL(object):
                 report = self.get_bahaviour_scores(acc_data)
                 res[acc_number] = report
 
-            #print len(processed_accs)
             cb(res)
             db.save_accounts(res.keys())
 
