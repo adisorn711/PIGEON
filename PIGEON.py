@@ -62,7 +62,7 @@ def run_pigeon(config_file):
         print "Initialization failed"
         sys.exit(2)
 
-    pigeon.transform_input()
+    #pigeon.transform_input()
 
     pigeon.run_model()
 

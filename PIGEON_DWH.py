@@ -61,8 +61,13 @@ class PIGEON(object):
         logging.info('Data Index has been completed.')
 
     def run_model(self):
+
+        logging.info('Retreiving all saved accounts')
+        saved_accs = self._db.get_all_accounts()
+        logging.info("{} accounts have been done.".format(len(saved_accs)))
+
         logging.info('Executing Model')
-        self._model.run_model(self.__exec_callback, self._db)
+        self._model.run_batch(self.__exec_callback, self._db, saved_accs)
         logging.info('Finished Model Execution')
 
     def create_report(self, report_file):
@@ -142,17 +147,28 @@ class PIGEON(object):
 class PIGEON_MODEL(object):
     def __init__(self, config):
         self._config = config
-        self._acc_merchant = defaultdict(set)
-        self._acc_monthly = defaultdict(set)
-        self._acc_merc_monthly = defaultdict(set)
-        self._acc_merc_yearly = defaultdict(set)
-        self._acc_groupby_monthly = defaultdict(list)
-        self._acc_groupby_merc_monthly = defaultdict(list)
-        self._acc_groupby_merc_yearly = defaultdict(list)
-        self._acc_merc_txn = defaultdict(list)
-        #self._acc_merc_txn_budget = defaultdict(list)
-        self._acc_merc_freq = defaultdict(list)
-        self._acc_merc_visit_monthly = defaultdict(list)
+
+        # self._acc_merchant = defaultdict(set)
+        # self._acc_monthly = defaultdict(set)
+        # self._acc_merc_monthly = defaultdict(set)
+        # #self._acc_merc_yearly = defaultdict(set)
+        # self._acc_groupby_monthly = defaultdict(list)
+        # self._acc_groupby_merc_monthly = defaultdict(list)
+        # #self._acc_groupby_merc_yearly = defaultdict(list)
+        # self._acc_merc_txn = defaultdict(list)
+        # #self._acc_merc_txn_budget = defaultdict(list)
+        # self._acc_merc_freq = defaultdict(list)
+        # self._acc_merc_visit_monthly = defaultdict(list)
+
+        self._acc_merchant = dict()
+        self._acc_monthly = dict()
+        self._acc_merc_monthly = dict()
+        self._acc_groupby_monthly = dict()
+        self._acc_groupby_merc_monthly = dict()
+        self._acc_merc_txn = dict()
+        self._acc_merc_freq = dict()
+        self._acc_merc_visit_monthly = dict()
+
         self._acc_master = dict()
         self._month_keys = []
         self._STA_CATS = set(['PETROL'])
@@ -173,31 +189,106 @@ class PIGEON_MODEL(object):
 
         data_path = self._config['INPUT_DIR']
         exec_date = int(self._config['EXEC_DATE'])
+        prev_acc = None
+        num_acc = 0
+        _acc_merchant = dict()
+
+        _acc_merchant = dict()
+        _acc_monthly = dict()
+        _acc_groupby_monthly = dict()
+        _acc_merc_monthly = dict()
+        _acc_groupby_merc_monthly = dict()
+        _acc_merc_txn = dict()
+        _acc_merc_freq = dict()
+
+        row_count = 0
         with open(os.path.join(data_path, 'input.csv'), 'rb') as csvfile:
             spamreader = csv.reader(csvfile, delimiter='|')
             next(spamreader, None)
-            for row in spamreader:
-                k = map(lambda x:x.strip(), row)
+            seen_accs = list()
+            for k in spamreader:
+                #k = map(lambda x:x.strip(), row)
                 if k[0] in saved_accs:
                     continue
 
+                cur_acc = k[0]
+
+                if prev_acc is not None and prev_acc != cur_acc:
+                    num_acc += 1
+
+                if num_acc == 10000:
+                    #seen_accs.extend(self._acc_merchant.keys())
+                    self.post_indexing()
+                    print dt.now(), num_acc, row_count
+                    yield self._acc_merchant.keys()
+                    self.clear_data_index()
+                    num_acc = 0
+
                 txn_timestamp = int(k[4])
-                self._acc_merchant[k[0]].add(k[2])
-                self._acc_monthly[k[0]].add(int(k[4]))
-                self._acc_groupby_monthly["_".join((k[0],k[4]))].append(float(k[3]))
-                self._acc_merc_monthly["_".join((k[0],k[2]))].add(int(k[4]))
-                self._acc_groupby_merc_monthly["_".join((k[0],k[2],str(int(k[4]))))].append(float(k[3]))
-                self._acc_merc_txn["_".join((k[0],k[2], "H" if txn_timestamp < exec_date else "R"))].append(float(k[3]))
-                self._acc_merc_freq["_".join((k[0],k[2]))].append(1)
+                a = "%s_%s" % (k[0],k[4]) #k[0] + '_' + k[4]
+                b = "%s_%s" % (k[0],k[2]) #k[0] + '_' + k[2]
+                c = "%s_%s_%s" % (k[0],k[2],k[4]) #k[0] + '_' + k[2] + '_' + k[4]
+                txn_timestamp = int(k[4])
+
+                try:
+                    self._acc_merchant[k[0]].add(k[2])
+                except KeyError:
+                    self._acc_merchant[k[0]] = set([k[2]])
+
+                try:
+                    self._acc_monthly[k[0]].add(int(k[4]))
+                except KeyError:
+                    self._acc_monthly[k[0]] = set([int(k[4])])
+
+                try:
+                    self._acc_groupby_monthly[a].append(float(k[3]))
+                except KeyError:
+                    self._acc_groupby_monthly[a] = [float(k[3]),]
+
+                try:
+                    self._acc_merc_monthly[b].add(int(k[4]))
+                except KeyError:
+                    self._acc_merc_monthly[b] = set([int(k[4])])
+
+                try:
+                    self._acc_groupby_merc_monthly[c].append(float(k[3]))
+                except KeyError:
+                    self._acc_groupby_merc_monthly[c] = [float(k[3]),]
+
+                try:
+                    self._acc_merc_freq[b].append(1)
+                except KeyError:
+                    self._acc_merc_freq[b] = [1]
+
+                e = "%s_%s" % (b,"H" if txn_timestamp < exec_date else "R") # b + '_' + "H" if txn_timestamp < exec_date else "R"
+
+                try:
+                    self._acc_merc_txn[e].append(float(k[3]))
+                except KeyError:
+                    self._acc_merc_txn[e] = [float(k[3]),]
+
+                prev_acc = cur_acc
+
+            if num_acc > 0:
+                #seen_accs.extend(self._acc_merchant.keys())
+                print num_acc
+                self.post_indexing()
+                yield self._acc_merchant.keys()
+                #print len(self._acc_merchant.keys())
+                self.clear_data_index()
+                num_acc = 0
+
+            print len(seen_accs), len(set(seen_accs))
 
 
-        # for k,v in self._acc_groupby_merc_yearly.iteritems():
-        #     self._acc_groupby_merc_yearly[k] = np.mean(v)
-
-        # reduce
+    def post_indexing(self):
         for k,v in self._acc_groupby_merc_monthly.iteritems():
             self._acc_groupby_merc_monthly[k] = sum(v)
-            self._acc_merc_visit_monthly["_".join(k.split("_")[:2])].append(len(v))
+
+            try:
+                self._acc_merc_visit_monthly["_".join(k.split("_")[:2])].append(len(v))
+            except KeyError:
+                self._acc_merc_visit_monthly["_".join(k.split("_")[:2])] = [len(v),]
 
         for k,v in self._acc_merc_freq.iteritems():
             self._acc_merc_freq[k] = sum(v)
@@ -205,21 +296,42 @@ class PIGEON_MODEL(object):
         for k,v in self._acc_groupby_monthly.iteritems():
             self._acc_groupby_monthly[k] = sum(v)
 
-        #############################################
-        # Create Account Master
-        #############################################
-        with open(os.path.join(data_path, 'account_master.csv'), 'rb') as csvfile:
-            spamreader = csv.reader(csvfile, delimiter='|')
-            next(spamreader, None)
-            for row in spamreader:
-                k = map(lambda x:x.strip(), row)
-                if len(k) == 0:
-                    continue
+    def clear_data_index(self):
+        self._acc_merchant = dict()
+        self._acc_monthly = dict()
+        self._acc_merc_monthly = dict()
+        self._acc_groupby_monthly = dict()
+        self._acc_groupby_merc_monthly = dict()
+        self._acc_merc_txn = dict()
+        self._acc_merc_freq = dict()
+        self._acc_merc_visit_monthly = dict()
 
-                if k[0] in saved_accs:
-                    continue
+        # self._acc_merchant = defaultdict(set)
+        # self._acc_monthly = defaultdict(set)
+        # self._acc_merc_monthly = defaultdict(set)
+        # self._acc_merc_yearly = defaultdict(set)
+        # self._acc_groupby_monthly = defaultdict(list)
+        # self._acc_groupby_merc_monthly = defaultdict(list)
+        # self._acc_groupby_merc_yearly = defaultdict(list)
+        # self._acc_merc_txn = defaultdict(list)
+        # self._acc_merc_freq = defaultdict(list)
+        # self._acc_merc_visit_monthly = defaultdict(list)
 
-                self._acc_master[k[0]] = (k[1], k[2])
+    def run_batch(self, cb, db, saved_accs):
+        #processed_accs = set()
+        #self.create_data_index(saved_accs)
+        for acc_keys in self.create_data_index(saved_accs):
+            #print len(acc_keys)
+            res = {}
+            for acc_number in acc_keys:
+                acc_data = self.prepare_data(acc_number)
+
+                report = self.get_bahaviour_scores(acc_data)
+                res[acc_number] = report
+
+            #print len(processed_accs)
+            cb(res)
+            db.save_accounts(res.keys())
 
     def run_model(self, cb, db):
         acc_keys = self._acc_merchant.keys()
