@@ -11,6 +11,7 @@ from Constants import *
 from collections import defaultdict
 from sklearn import preprocessing
 import logging
+import hashlib
 
 from dateutil import rrule
 from datetime import timedelta
@@ -99,6 +100,44 @@ class PIGEON(object):
         return os.path.exists(file_path)
 
     def __validate_input(self):
+        logging.info('Start validating input')
+        data_path = self._config['INPUT_DIR']
+
+        #df = pd.read_csv(os.path.join(data_path,'input.csv'), sep='|', parse_dates=[1])
+        lines = 0
+        res = [0,0,0,0,0]
+        with open(os.path.join(data_path, 'input.csv'), 'rb') as csvfile:
+            next(csvfile, None)
+            for l in csvfile:
+                row = l.split("|")
+
+                try:
+                    int(row[0])
+                except:
+                    res[0] = 1
+                    break
+                #dt.datetime.strptime( row[1], "%Y%m%d" )
+                try:
+                    dt.datetime.strptime( row[1], "%Y%m%d" )
+                except:
+                    res[1] = 1
+                    break
+
+                try:
+                    float(row[3])
+                except:
+                    res[3] = 1
+                    break
+
+                if len(row[4].rstrip()) != 6:
+                    res[4] = 1
+                    break
+
+        if sum(res) != 0:
+            logging.info('Input is invalid !!!')
+            return False
+
+        logging.info('Input has been successfully validated.')
         return True
 
     def __check_logging_system(self):
