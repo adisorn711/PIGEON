@@ -18,8 +18,8 @@ import os
 ctx = SparkContext("local[*]", "PIGEON SWIFT")
 #ctx = SparkContext(scfg)
 
-dwhRaw = ctx.textFile("file:///home/ks11174695/Desktop/crm/notebooks/KCC_TXN_FULL.tsv")
-ctx.addFile("file:///home/ks11174695/Desktop/PIGEON/config.ini")
+dwhRaw = ctx.textFile("file:///Users/adisornj/Desktop/PythonNotebooks/KCC_TXN_FULL.tsv")
+ctx.addFile("file:///Users/adisornj/Desktop/PIGEON/config.ini")
 
 print datetime.now()
 config_path = SparkFiles.get('config.ini')
@@ -57,6 +57,12 @@ def custom_lambda(x):
     
     return ((x[0],x[2]), txn_tup)
 
+def filter_less_used(x):
+    txn_tup = x[1]
+    N = txn_tup[0] + txn_tup[1]
+
+    return N > 12
+
 print dwhRaw.getNumPartitions()
 dwhFile = dwhRaw
 print dwhFile
@@ -65,7 +71,7 @@ dwhContents = dwhFile
 
 dwh_temp = dwhContents.map(lambda k: k.replace('"','').split("\t"))
 dwh_temp = dwh_temp.map(lambda p: (p[0], p[1], p[2], float(p[3]), int(p[4]) ))
-dwh_temp = dwh_temp.filter(lambda arr: arr[4] >= 201401 and arr[4] <= 201704)
+dwh_temp = dwh_temp.filter(lambda arr: arr[4] >= 201404 and arr[4] <= 201704)
 
 
 STAs = set(['PETROL'])
@@ -75,20 +81,15 @@ rdd_txn_temp = dwh_temp.filter(lambda p: p[2] not in STAs)
 rdd_txn_temp = rdd_txn_temp.map(lambda p: ((p[0],p[2]),([],[])))
 #print rdd_txn_temp.take(5)
 rdd_txn = dwh_temp.map(custom_lambda)
-print rdd_txn.take(5)
+# print rdd_txn.take(5)
 
 rdd_txn_final = rdd_txn.reduceByKey(lambda a, b: (a[0]+b[0],a[1]+b[1],a[2]+b[2]))
+# print rdd_txn_final.count()
+rdd_txn_final = rdd_txn_final.filter(filter_less_used)
 #rdd_txn_final = rdd_txn_final.map(lambda p: (p[0],(p[1][0],p[1][1], len(p[1][0])+len(p[1][1]))))
-print rdd_txn_final.take(5)
-exit()
+# print rdd_txn_final.count()
 
-rdd_txn = dwh_temp.map(lambda p: ((p[0],p[2]), ([p[3]],[]) if p[4] < 201704 else ([],[p[3]]) ))
-#print rdd_txn.take(5)
-print "Pre union"
-rdd_txn_final = rdd_txn_temp.union(rdd_txn).reduceByKey(lambda a, b: (a[0]+b[0],a[1]+b[1]))
-rdd_txn_final = rdd_txn_final.map(lambda p: (p[0],(p[1][0],p[1][1], len(p[1][0])+len(p[1][1]))))
-print rdd_txn_final.take(5)
-exit()
+
 eps = 0.0001
 
 def t_test(TST,TR):
@@ -145,29 +146,11 @@ def t_test(TST,TR):
 
     return (round(t, 4), round(p*100.0, 2))
 
-def compute_behaviour(x):
-    tr = x[1][0]
-    tst = x[1][1]
-    
-    x1, x2 = t_test(tst,tr)
-    return (x[0], np.array([x1,x2,0]))
-
-#filter category less used
-rdd_txn_final_computed = rdd_txn_final.map(compute_behaviour)
-
-def map_seasonality(x):
-    values = [0] * len(month_keys)
-    values[mm2index[x[4]]] = x[3]
-    
-    return ((x[0],x[2]), np.array(values))
-
-def compute_seasonality(x):
-    txn = x[1]
-    
+def compute_seasonality(txn):
     ratio = np.count_nonzero(txn) / float(len(txn))
     
     if ratio < 0.8:
-        return (x[0], np.array([0,0,-99]))
+        return -99
         
     #print data_monthly
     result = seasonal_decompose(txn, model='additive', freq=12)
@@ -176,7 +159,31 @@ def compute_seasonality(x):
     seasonal_scores = result.seasonal[:12]
     scores = [round(i,4) for i in preprocessing.scale(seasonal_scores)]
     
-    return (x[0], np.array([0,0,scores[0]]))
+    return scores[0]
+
+def compute_behaviour(x):
+    tr = x[1][0]
+    tst = x[1][1]
+    
+    x1, x2 = t_test(tst,tr)
+    x3 = compute_seasonality(x[1][2])
+
+    return (x[0], (x1,x2,x3))
+
+#filter category less used
+rdd_txn_final_computed = rdd_txn_final.map(compute_behaviour)
+print rdd_txn_final_computed.take(5)
+
+
+exit()
+
+def map_seasonality(x):
+    values = [0] * len(month_keys)
+    values[mm2index[x[4]]] = x[3]
+    
+    return ((x[0],x[2]), np.array(values))
+
+
 
 def map_to_str(arr):
     return map(str,arr)
