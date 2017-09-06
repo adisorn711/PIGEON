@@ -224,6 +224,9 @@ class PIGEON_MODEL(object):
             month_keys.append(v)
         self._month_keys = month_keys
 
+        left_bound = self._month_keys[0]
+        right_bound = self._month_keys[-1]
+
         tmp_acc_groupby_merc_yearly = defaultdict(list)
 
         data_path = self._config['INPUT_DIR']
@@ -249,6 +252,11 @@ class PIGEON_MODEL(object):
                 #k = map(lambda x:x.strip(), row)
                 if k[0] in saved_accs:
                     continue
+                
+                txn_timestamp = int(k[4])
+
+                if txn_timestamp < left_bound or txn_timestamp > right_bound:
+                    continue
 
                 cur_acc = k[0]
 
@@ -263,7 +271,7 @@ class PIGEON_MODEL(object):
                     self.clear_data_index()
                     num_acc = 0
 
-                txn_timestamp = int(k[4])
+                
                 a = "%s_%s" % (k[0],k[4]) #k[0] + '_' + k[4]
                 b = "%s_%s" % (k[0],k[2]) #k[0] + '_' + k[2]
                 c = "%s_%s_%s" % (k[0],k[2],k[4]) #k[0] + '_' + k[2] + '_' + k[4]
@@ -502,9 +510,22 @@ class PIGEON_MODEL(object):
             ts_data = data_info['overall']
             if ts_data.count(ts_data[0]) != len(ts_data): # check list identication, all values are the same
                 s_scores = compute_seasonal_score(ts_data, None)
-                res['overall'] = s_scores
+                s_scores_arranged = self.rearrange_months_arr(s_scores)
+                res['overall'] = s_scores_arranged
 
         return res
+
+    def rearrange_months_arr(self, arr):
+        yyyymm = self._month_keys[0]
+        mm = (yyyymm%100) - 1
+
+        if mm > 0:
+            cut_idx = 12 - mm
+            res = arr[cut_idx:] + arr[:cut_idx]
+
+            return res
+            
+        return arr     
 
 
 
