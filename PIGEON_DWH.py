@@ -491,7 +491,7 @@ class PIGEON_MODEL(object):
         #acc_lifetime = 0.0
         acc_data = data_info['Data']
         res = {}
-        month_i = self._running_month - 1
+        month_i = (len(self._month_keys) - 1) % 12
         for merc, dataDic in acc_data.iteritems():
             data = {}
             txn_data = dataDic['txn']
