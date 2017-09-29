@@ -546,7 +546,7 @@ class PIGEON_MODEL(object):
         
 
 
-eps = 0.0001
+eps = 10e-7
 def t_test(TST,TR):
     if len(TR) < 1:
         return (10, 0.0) # new comer for that category
@@ -612,6 +612,9 @@ def wallet_sense(data_monthly):
     srs = pd.Series(data_monthly)
     l,u = srs.quantile(0.25), srs.quantile(0.75)
     ts_filtered = [i for i in data_monthly if i >= l and i <= u]
+    ts_nonzeros = [i for i in data_monthly if i >= 0]
+    GA = np.mean(ts_nonzeros)
+    GSTD = np.std(ts_nonzeros)
 
     d_mva = srs.rolling(window=6,center=False).mean()
     d_std = np.std(ts_filtered)
@@ -621,9 +624,9 @@ def wallet_sense(data_monthly):
     d_mvstd = u + 2.0*d_std
     d_mvstd_lower = u - 2.0*d_std
 
-    if last_spend < d_mvstd_lower:
+    if last_spend < d_mvstd_lower or last_spend < (GA - 2.0*GSTD):
         return 0
-    elif last_spend > d_mvstd:
+    elif last_spend > d_mvstd or last_spend > (GA + 2.0*GSTD):
         return 2
 
     return 1 
@@ -702,3 +705,4 @@ def wrtie_to_csv(path, columns, row_data):
             w = csv.DictWriter(f, columns, delimiter='|')
             w.writeheader()
             w.writerows(row_data)
+
