@@ -18,8 +18,8 @@ import os
 ctx = SparkContext("local[*]", "PIGEON SWIFT")
 #ctx = SparkContext(scfg)
 
-dwhRaw = ctx.textFile("file:///Users/adisornj/Desktop/PythonNotebooks/KCC_TXN_FULL.tsv")
-ctx.addFile("file:///Users/adisornj/Desktop/PIGEON/config.ini")
+dwhRaw = ctx.textFile("file:///home/jay/Desktop/PIGEON/data/input.csv")
+ctx.addFile("file:///home/jay/Desktop/PIGEON/config.ini")
 
 print datetime.now()
 config_path = SparkFiles.get('config.ini')
@@ -29,6 +29,8 @@ with open(SparkFiles.get('config.ini')) as test_file:
 print type(config_path), config_path
 Config = ConfigParser.ConfigParser()
 Config.read(config_path)
+
+cutpoint = ctx.broadcast(-2)
 
 print os.path.exists(config_path)
 
@@ -45,9 +47,134 @@ for dt in rrule.rrule(rrule.MONTHLY, dtstart=start_date, until=end_date):
 
 print month_keys
 
+monthkey_cut = ctx.broadcast(month_keys[cutpoint.value])
+
+month_keys_bc = ctx.broadcast(month_keys)
+n_months = len(month_keys)
+n_months_bc = ctx.broadcast(n_months)
+
 mm2index = dict([(v,i) for i,v in enumerate(month_keys)])
 
 print mm2index
+
+mm2index_bc = ctx.broadcast(mm2index)
+
+
+#
+# Customized Lambda functions
+#
+#
+def format_month_to_array(tu):
+    arr = ([tu[2]],[]) if tu[1] < monthkey_cut.value else ([],[tu[2]])
+    
+    return (tu[0], tu[1], arr)
+
+def format_month_to_array_cat(tu):
+    arr = [0] * n_months_bc.value
+    arr[mm2index_bc.value[tu[2]]] = tu[3]
+
+    return (tu[0], tu[1], tu[2], np.array(arr))
+
+
+#
+#   Computational Models
+#
+def ttest(B,A):
+    TST = B[np.nonzero(B)]
+    TR = A[np.nonzero(A)]
+    if len(TR) < 1 and len(TST) > 0:
+        return (10, 0.0) # new comer for that category
+
+    if len(TST) < 1 and len(TR) > 0:
+        return (-10, 0.0)
+
+    if set(TST) == set(TR):
+        return (11, 100) # same spending from time to time
+
+    recent = np.mean(TST)
+    
+
+    return 0
+
+def wallet_sense(tu):
+    a = np.array(tu[0])
+    b = np.array(tu[1])
+    TST = b
+    TR = a[np.nonzero(a)]
+
+    if len(TR) < 1 and len(TST) > 0:
+        return 2
+
+    if len(TST) < 1 and len(TR) > 0:
+        return 0
+
+    if set(TST) == set(TR):
+        return 1
+    
+    recent = np.mean(TST)
+    std_h = np.std(TR)
+    u_h = np.mean(TR)
+
+    if np.isclose(0,std_h):
+        if recent > u_h:
+            return 2
+        elif recent < u_h:
+            return 0
+        else:
+            return 1
+
+    t_score = (recent - u_h) / std_h
+    if t_score > 2.0:
+        return 2
+    elif t_score < -2.0:
+        return 0
+    
+    return 1
+
+def compute_wallet_sense(tu):
+    wallet_res = wallet_sense(tu[1])
+
+    return (tu[0], wallet_res)
+
+dwhContents = dwhRaw.filter(lambda p: "ACCOUNT_KEY" not in p)\
+.map(lambda k: k.replace('"','').split("|"))\
+.filter(lambda p: int(p[4]) >= month_keys_bc.value[0] and int(p[4]) <= month_keys_bc.value[-1]).cache()
+
+sense_rdd = dwhContents.map(lambda p: ((int(p[0]), int(p[4])), float(p[3])))\
+.reduceByKey(lambda a,b: a+b)\
+.map(lambda p: (p[0][0], p[0][1], p[1]))\
+.map(format_month_to_array)\
+.map(lambda p: (p[0],p[2]))\
+.reduceByKey(lambda a,b: (a[0]+b[0],a[1]+b[1]))\
+.map(compute_wallet_sense)
+
+
+print sense_rdd.take(5)
+
+exit()
+# create Catgory to Int mapper
+
+merchant_arr = dwhContents.map(lambda p: p[2]).distinct().collect()
+merchant2index = dict([(v,i) for i,v in enumerate(sorted(merchant_arr))])
+print merchant2index
+
+merchant2index_bc = ctx.broadcast(merchant2index)
+
+txn_rdd = dwhContents.map(lambda p: (int(p[0]), int(p[1]), merchant2index_bc.value[p[2]] ,float(p[3]), int(p[4]))).cache()
+
+print txn_rdd.take(5)
+
+txn_agg_rdd = txn_rdd.map(lambda p: ((p[0],p[2],p[4]),p[3]))\
+.reduceByKey(lambda a,b: a+b)\
+.map(lambda p: (p[0][0], p[0][1], p[0][2], p[1]))\
+.map(format_month_to_array_cat)\
+.map(lambda p: ((p[0], p[1]), p[3]))\
+.reduceByKey(lambda a,b: a+b)
+
+print txn_agg_rdd.take(5)
+
+
+exit()
 
 def custom_lambda(x):
     values = [0] * len(month_keys)
