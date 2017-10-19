@@ -68,6 +68,9 @@ print mm2index
 
 mm2index_bc = ctx.broadcast(mm2index)
 
+score_codes = ctx.broadcast(set([-10,10,-14,11,14]))
+behaviour_types_map = ctx.broadcast({-10: 301, 10: 201, -14: 302, 11: 202\
+, 14: 203})
 
 #
 # Customized Lambda functions
@@ -209,7 +212,12 @@ def compute_cateogry_score(tu):
     scores = ttest(tu[1][cutpoint.value:], tu[1][:cutpoint.value])
     seasonal_scores = compute_seasonal_score_category(tu[1])
 
-    return (tu[0], scores + (seasonal_scores))
+    #add behaviour type from t_score
+    score = scores[0]
+    score_type = behaviour_types_map.value[score] if score in score_codes.value else 100
+    scores = scores + (score_type,)
+
+    return (tu[0], scores + seasonal_scores)
 
 dwhContents = dwhRaw.filter(lambda p: "ACCOUNT_KEY" not in p)\
 .map(lambda k: k.replace('"','').split("|"))\
@@ -247,6 +255,7 @@ merchant2index = dict([(v,i) for i,v in enumerate(sorted(merchant_arr))])
 print merchant2index
 
 merchant2index_bc = ctx.broadcast(merchant2index)
+index2merchant_bc = ctx.broadcast(dict([(v,k) for k,v in merchant2index.iteritems()]))
 
 txn_rdd = dwhContents.map(lambda p: (int(p[0]), int(p[1]), merchant2index_bc.value[p[2]] ,float(p[3]), int(p[4]))).cache()
 
@@ -259,7 +268,11 @@ txn_agg_rdd = txn_rdd.map(lambda p: ((p[0],p[2],p[4]),p[3]))\
 .map(lambda p: ((p[0], p[1]), p[3]))\
 .reduceByKey(lambda a,b: a+b)
 
-txn_cat_score = txn_agg_rdd.map(compute_cateogry_score)
+txn_cat_score = txn_agg_rdd.map(compute_cateogry_score)\
+.map(lambda p: (p[0][0], index2merchant_bc.value[p[0][1]], p[1][0], p[1][1], p[1][2], p[1][3], p[1][4]))\
+.map(lambda p: Row(ACC_KEY=p[0], CATEGORY=p[1], SCORE=p[2], CONF=p[3], SCORE_TYPE=p[4], SEASONAL=p[5], USAGE_RATIO=p[6]))
+
+
 
 print txn_cat_score.take(5)
 
