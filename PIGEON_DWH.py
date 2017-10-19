@@ -101,6 +101,7 @@ class PIGEON(object):
 
     def __validate_input(self):
         logging.info('Start validating input')
+        return True
         data_path = self._config['INPUT_DIR']
 
         #df = pd.read_csv(os.path.join(data_path,'input.csv'), sep='|', parse_dates=[1])
@@ -211,6 +212,7 @@ class PIGEON_MODEL(object):
         self._acc_master = dict()
         self._month_keys = []
         self._STA_CATS = set(['PETROL'])
+        self._current_month_index = 0
 
         start_date, end_date = self._config[K_DATE_RANGE]
         self._running_month = end_date.month
@@ -223,6 +225,9 @@ class PIGEON_MODEL(object):
             v = dt.year*100 + dt.month
             month_keys.append(v)
         self._month_keys = month_keys
+        self._current_month_index = self.get_month_index(month_keys)
+        left_bound = self._month_keys[0]
+        right_bound = self._month_keys[-1]
 
         tmp_acc_groupby_merc_yearly = defaultdict(list)
 
@@ -249,6 +254,11 @@ class PIGEON_MODEL(object):
                 #k = map(lambda x:x.strip(), row)
                 if k[0] in saved_accs:
                     continue
+                
+                txn_timestamp = int(k[4])
+
+                if txn_timestamp < left_bound or txn_timestamp > right_bound:
+                    continue
 
                 cur_acc = k[0]
 
@@ -263,7 +273,7 @@ class PIGEON_MODEL(object):
                     self.clear_data_index()
                     num_acc = 0
 
-                txn_timestamp = int(k[4])
+                
                 a = "%s_%s" % (k[0],k[4]) #k[0] + '_' + k[4]
                 b = "%s_%s" % (k[0],k[2]) #k[0] + '_' + k[2]
                 c = "%s_%s_%s" % (k[0],k[2],k[4]) #k[0] + '_' + k[2] + '_' + k[4]
@@ -392,8 +402,6 @@ class PIGEON_MODEL(object):
         STA_CATS = self._STA_CATS
         data = {}
         acc_lifetime = 0.0 # get acc lifetime
-        #data['Info'] = {}
-        #data['Data'] = {}
 
         #prepare overall trend
         m_keys = self._acc_monthly[acc_number]
@@ -411,16 +419,16 @@ class PIGEON_MODEL(object):
         non_zero_n = np.count_nonzero(total_monthly) * 100 / float(len(total_monthly))
         if non_zero_n >= 80:
             data['overall'] = total_monthly
-
+        data['wallet'] = total_monthly
         #######################
 
         data_merc = {}
         for merc in merchants:
             #pass
-            freq = self._acc_merc_freq['_'.join([acc_number,merc])]
+            #freq = self._acc_merc_freq['_'.join([acc_number,merc])]
 
-            if freq < 12:
-                continue
+            #if freq < 12:
+                #continue
 
             data_merc[merc] = {}
             #total_budget += self._acc_merc_txn_reduce['_'.join([acc_number,merc])]
@@ -483,7 +491,7 @@ class PIGEON_MODEL(object):
         #acc_lifetime = 0.0
         acc_data = data_info['Data']
         res = {}
-        month_i = self._running_month - 1
+        month_i = self._current_month_index
         for merc, dataDic in acc_data.iteritems():
             data = {}
             txn_data = dataDic['txn']
@@ -502,17 +510,46 @@ class PIGEON_MODEL(object):
             ts_data = data_info['overall']
             if ts_data.count(ts_data[0]) != len(ts_data): # check list identication, all values are the same
                 s_scores = compute_seasonal_score(ts_data, None)
-                res['overall'] = s_scores
+                s_scores_arranged = self.rearrange_months_arr(s_scores)
+                res['overall'] = s_scores_arranged
+
+        if 'wallet' in data_info:
+            ts_data = data_info['wallet']
+            res['wallet'] = wallet_sense(ts_data)
 
         return res
 
+    def rearrange_months_arr(self, arr):
+        yyyymm = self._month_keys[0]
+        mm = (yyyymm%100) - 1
+
+        if mm > 0:
+            cut_idx = 12 - mm
+            res = arr[cut_idx:] + arr[:cut_idx]
+
+            return res
+            
+        return arr     
+
+    def get_month_index(self, month_keys):  
+        last_m = month_keys[-1]%100
+
+        month_index = 0
+        for i,v in enumerate(month_keys):
+            m = v%100
+            if m % 12 == last_m:
+                month_index = i
+                break
+        
+        return month_index
+
+        
 
 
-
-eps = 0.0001
+eps = 10e-7
 def t_test(TST,TR):
     if len(TR) < 1:
-        return (-11, -1)
+        return (10, 0.0) # new comer for that category
 
     if len(TST) < 1:
         return (-10, 0.0)
@@ -520,9 +557,8 @@ def t_test(TST,TR):
     if np.count_nonzero(TR) == 0 and np.count_nonzero(TST) == 0:
         return (-20, -1)
 
-
     if set(TST) == set(TR):
-        return (-13, -1)
+        return (11, 100) # same spending from time to time
 
     t, p = 0, 0
     if len(TST) == 1:
@@ -537,7 +573,7 @@ def t_test(TST,TR):
             elif diff < -1*eps:
                 t = -1
             else:
-                return (-1, -1)
+                return (0, 100)
 
             return (round(t, 4), 0.00)
         #print "Non zero ",std, TST[0]
@@ -572,6 +608,29 @@ def compute_seasonal_score(data_monthly, month_i=None):
     scores = [round(i,4) for i in preprocessing.scale(seasonal_scores)]
     return scores if month_i is None else scores[month_i]
 
+def wallet_sense(data_monthly):
+    srs = pd.Series(data_monthly)
+    l,u = srs.quantile(0.25), srs.quantile(0.75)
+    ts_filtered = [i for i in data_monthly if i >= l and i <= u]
+    ts_nonzeros = [i for i in data_monthly if i >= 0]
+    GA = np.mean(ts_nonzeros)
+    GSTD = np.std(ts_nonzeros)
+
+    d_mva = srs.rolling(window=6,center=False).mean()
+    d_std = np.std(ts_filtered)
+    last_spend = data_monthly[-1]
+    u = d_mva.tolist()[-1]
+
+    d_mvstd = u + 2.0*d_std
+    d_mvstd_lower = u - 2.0*d_std
+
+    if last_spend < d_mvstd_lower or last_spend < (GA - 2.0*GSTD):
+        return 0
+    elif last_spend > d_mvstd or last_spend > (GA + 2.0*GSTD):
+        return 2
+
+    return 1 
+
 def dump_report(to_path, report_res, params):
     b = 0
     s = 0
@@ -581,20 +640,26 @@ def dump_report(to_path, report_res, params):
     behavior_overall = []
     confid = params[K_CONFIDENCE]
     seasonal_threshold = params[K_SEASONAL]
+    individuals = []
     for acc_number,report in report_res.iteritems():
         has_b = False
         has_s = False
         has_both = False
+        #print report
         for merc, score_info in report.iteritems():
             if merc == 'overall':
                 data = {}
                 data['ACC_NUMBER'] = acc_number
-                #data['ENTITY'] = 'KCC'
                 s_scores = score_info
                 for i,mon_abbr in enumerate(abbrvs):
                     data[mon_abbr] = s_scores[i]
 
                 behavior_overall.append(data)
+            elif merc == 'wallet':
+                data = {}
+                data['ACC_NUMBER'] = acc_number
+                data['SENSE'] = report['wallet']
+                individuals.append(data)
             else:
                 data = {}
                 data['ACC_NUMBER'] = acc_number
@@ -604,35 +669,8 @@ def dump_report(to_path, report_res, params):
                 if 'SS-SCORE' in score_info:
                     data['SS-SCORE'] = score_info['SS-SCORE']
                 else:
-                    data['SS-SCORE'] = -99
-                # #print p
-                # if p > -1 and p < confid:
-                #     data = {}
-                #     data['ACC_NUMBER'] = acc_number
-                #     data['ENTITY'] = 'KCC'
-                #     data['MERCHANT'] = merc
-                #     if t > 0:
-                #         data['BEHAVIOR_FLAG'] = 'U'
-                #     else:
-                #         data['BEHAVIOR_FLAG'] = 'D'
-                #     #print p
-                #     has_b = True
-                #
-                #     raw_score = t
-                #     if 'S-SCORE' in score_info:
-                #         ss = score_info['S-SCORE']
-                #         raw_score *= np.tanh(ss)
-                #         has_both = True
-                #         if np.fabs(ss) < seasonal_threshold:
-                #             has_s = True
-                #             data['SEASONAL_FLAG'] = 'N'
-                #         else:
-                #             data['SEASONAL_FLAG'] = 'Y'
-                #     else:
-                #         data['SEASONAL_FLAG'] = 'U'
-                #
-                #     data['RAW_SCORE'] = round(np.tanh(raw_score), 2)
-
+                    data['SS-SCORE'] = 404
+            
                 rows.append(data)
 
         if has_b:
@@ -645,16 +683,14 @@ def dump_report(to_path, report_res, params):
             has_both = False
             both += 1
 
-    # print n,b,s, both
-    #
-    # print rows[:5]
-    # print behavior_overall[:5]
-
     columns = ['ACC_NUMBER', 'MERCHANT', 'SP-SCORE', 'SP-CONF', 'SS-SCORE']
     wrtie_to_csv(os.path.join(to_path, 'spending_category.csv'), columns, rows)
 
     columns = ['ACC_NUMBER'] + abbrvs
     wrtie_to_csv(os.path.join(to_path, 'spending_overall.csv'), columns, behavior_overall)
+
+    columns = ['ACC_NUMBER', 'SENSE']
+    wrtie_to_csv(os.path.join(to_path, 'spending_sense.csv'), columns, individuals)
 
 def wrtie_to_csv(path, columns, row_data):
     exists = os.path.exists(path)
@@ -669,3 +705,4 @@ def wrtie_to_csv(path, columns, row_data):
             w = csv.DictWriter(f, columns, delimiter='|')
             w.writeheader()
             w.writerows(row_data)
+
