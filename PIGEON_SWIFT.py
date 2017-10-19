@@ -1,4 +1,4 @@
-from pyspark.sql import SQLContext
+from pyspark.sql import SQLContext, Row
 from pyspark.sql.types import *
 from pyspark import SparkConf, SparkContext
 import pandas as pd
@@ -47,6 +47,15 @@ for dt in rrule.rrule(rrule.MONTHLY, dtstart=start_date, until=end_date):
 
 print month_keys
 
+month_numbers = [m % 100 for m in month_keys[:12]]
+month_numbers_bc = ctx.broadcast(month_numbers)
+month_index = ctx.broadcast(month_numbers.index(month_keys[-1] % 100))
+print month_index.value
+
+month_number_2_name = ctx.broadcast({1: 'JAN', 2: 'FEB', 3: 'MAR', 4: 'APR'\
+, 5: 'MAY',6: 'JUN',7: 'JUL', 8: 'AUG'\
+, 9: 'SEP',10: 'OCT', 11: 'NOV', 12: 'DEC'})
+
 monthkey_cut = ctx.broadcast(month_keys[cutpoint.value])
 
 month_keys_bc = ctx.broadcast(month_keys)
@@ -75,7 +84,11 @@ def format_month_to_array_cat(tu):
 
     return (tu[0], tu[1], tu[2], np.array(arr))
 
+def format_month_to_array_monthly(tu):
+    arr = [0] * n_months_bc.value
+    arr[mm2index_bc.value[tu[1]]] = tu[2]
 
+    return (tu[0], np.array(arr))
 #
 #   Computational Models
 #
@@ -91,15 +104,49 @@ def ttest(B,A):
     if set(TST) == set(TR):
         return (11, 100) # same spending from time to time
 
-    recent = np.mean(TST)
-    
+    t, p = 0, 0
+    if len(TST) == 1:
+        n = len(TR)
+        u = np.mean(TR)
+        std = np.std(TR)
 
-    return 0
+        if np.isclose(0,std):
+            if TST[0] > u:
+                t = 1
+            elif TST[0] < u:
+                t = -1
+            else:
+                return (0, 100)
+
+            return (round(t, 4), 0.00)
+        #print "Non zero ",std, TST[0]
+        t = (TST[0] - u)/std
+        p = scipy.stats.t.sf(np.abs(t), n-1)*2
+        return (round(t, 4), round(p*100.0, 2))
+    elif len(TR) == 1:
+        u = np.mean(TST)
+        x = TR[0]
+
+        t = -12 if x < u else 12
+        p = 0.00
+    else:
+        #print len(TST), len(TR), type(TST), type(TR)
+        #t,p = -5,-5
+        t,p = ttest_ind(TST, TR, equal_var=False)
+
+        if np.isinf(t):
+            u_tr = np.mean(TR)
+            u_tst = np.mean(TST)
+
+            t = -14 if u_tst < u_tr else 14
+            p = 0.00
+
+    return (round(t, 4), round(p*100.0, 2))
 
 def wallet_sense(tu):
     a = np.array(tu[0])
     b = np.array(tu[1])
-    TST = b
+    TST = b[np.nonzero(b)]
     TR = a[np.nonzero(a)]
 
     if len(TR) < 1 and len(TST) > 0:
@@ -111,7 +158,7 @@ def wallet_sense(tu):
     if set(TST) == set(TR):
         return 1
     
-    recent = np.mean(TST)
+    recent = np.mean(b)
     std_h = np.std(TR)
     u_h = np.mean(TR)
 
@@ -136,6 +183,34 @@ def compute_wallet_sense(tu):
 
     return (tu[0], wallet_res)
 
+def compute_seasonal_score(tu):
+    data_monthly = tu[1]
+    usage_ratio = round(np.count_nonzero(data_monthly) / float(len(data_monthly)), 4)
+    #print data_monthly
+    result = seasonal_decompose(data_monthly, model='additive', freq=12)
+    #print np.std(result.seasonal)
+    seasonal_scores = result.seasonal[:12]
+    scores = [round(i,4) for i in preprocessing.scale(seasonal_scores)]
+    score_dic = dict([(month_number_2_name.value[month_numbers_bc.value[i]],v) for i,v in enumerate(scores)])
+    score_dic['ACC_KEY'] = tu[0]
+    score_dic['USAGE_RATIO'] = usage_ratio
+    return score_dic
+
+def compute_seasonal_score_category(data_monthly):
+    usage_ratio = round(np.count_nonzero(data_monthly) / float(len(data_monthly)), 4)
+    #print data_monthly
+    result = seasonal_decompose(data_monthly, model='additive', freq=12)
+    #print np.std(result.seasonal)
+    seasonal_scores = result.seasonal[:12]
+    scores = [round(i,4) for i in preprocessing.scale(seasonal_scores)]
+    return (scores[month_index.value], usage_ratio)
+
+def compute_cateogry_score(tu):
+    scores = ttest(tu[1][cutpoint.value:], tu[1][:cutpoint.value])
+    seasonal_scores = compute_seasonal_score_category(tu[1])
+
+    return (tu[0], scores + (seasonal_scores))
+
 dwhContents = dwhRaw.filter(lambda p: "ACCOUNT_KEY" not in p)\
 .map(lambda k: k.replace('"','').split("|"))\
 .filter(lambda p: int(p[4]) >= month_keys_bc.value[0] and int(p[4]) <= month_keys_bc.value[-1]).cache()
@@ -146,12 +221,25 @@ sense_rdd = dwhContents.map(lambda p: ((int(p[0]), int(p[4])), float(p[3])))\
 .map(format_month_to_array)\
 .map(lambda p: (p[0],p[2]))\
 .reduceByKey(lambda a,b: (a[0]+b[0],a[1]+b[1]))\
-.map(compute_wallet_sense)
+.map(compute_wallet_sense)\
+.map(lambda p: Row(ACC_KEY=p[0], PIGEON_SENSE=p[1]))
 
 
-print sense_rdd.take(5)
+#print sense_rdd.take(5)
 
-exit()
+
+
+#Compute Overall Seasonality
+overall_seasonality_rdd = dwhContents.map(lambda p: ((int(p[0]), int(p[4])), float(p[3])))\
+.reduceByKey(lambda a,b: a+b)\
+.map(lambda p: (p[0][0], p[0][1], p[1]))\
+.map(format_month_to_array_monthly)\
+.map(compute_seasonal_score)\
+.map(lambda p: Row(**p))
+
+#print overall_seasonality_rdd.take(5)
+
+
 # create Catgory to Int mapper
 
 merchant_arr = dwhContents.map(lambda p: p[2]).distinct().collect()
@@ -171,8 +259,9 @@ txn_agg_rdd = txn_rdd.map(lambda p: ((p[0],p[2],p[4]),p[3]))\
 .map(lambda p: ((p[0], p[1]), p[3]))\
 .reduceByKey(lambda a,b: a+b)
 
-print txn_agg_rdd.take(5)
+txn_cat_score = txn_agg_rdd.map(compute_cateogry_score)
 
+print txn_cat_score.take(5)
 
 exit()
 
